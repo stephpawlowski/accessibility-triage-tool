@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Accessibility Debt Triage</title>
+<style>
+  :root {
+    --ink: #2f3a3c;
+    --ink-soft: #5b6668;
+    --paper: #fafaf8;
+    --card: #ffffff;
+    --line: #e4e2dd;
+    --teal: #3d5c61;
+    --teal-dark: #2c4448;
+    --serious: #c1483f;
+    --moderate: #b8862f;
+    --minor: #6b7a7d;
+    --error: #a83b32;
+    --cluster-1: #c1483f;
+    --cluster-2: #3d7a8c;
+    --cluster-3: #b8862f;
+    --cluster-4: #6a4c93;
+    --cluster-5: #3d8c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  header {
+    padding: 40px 24px 24px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 2rem;
+    color: var(--teal-dark);
+    margin: 0 0 8px;
+  }
+  .subtitle {
+    color: var(--ink-soft);
+    max-width: 640px;
+    margin: 0 0 28px;
+  }
+  .scan-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .scan-row input {
+    flex: 1;
+    min-width: 240px;
+    padding: 11px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 0.95rem;
+  }
+  .scan-row button {
+    padding: 11px 20px;
+    background: var(--teal);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  .scan-row button:hover:not(:disabled) { background: var(--teal-dark); }
+  .scan-row button:disabled { opacity: 0.6; cursor: default; }
+  .demo-note {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin-top: 10px;
+  }
+  .status-line {
+    font-size: 0.88rem;
+    margin-top: 12px;
+    display: none;
+  }
+  .status-line.visible { display: block; }
+  .status-line.loading { color: var(--teal); }
+  .status-line.error { color: var(--error); }
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+  }
+  .result-meta {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 16px 0 24px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 28px;
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+  }
+  .result-meta strong { color: var(--ink); }
+
+  section h2 {
+    font-size: 1.15rem;
+    color: var(--teal-dark);
+    margin: 0 0 14px;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 14px;
+    font-size: 0.85rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+
+  .screenshot-wrap {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+    margin-bottom: 48px;
+  }
+  .screenshot-wrap img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .overlay-box {
+    position: absolute;
+    border: 2px solid;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    transition: background 0.15s, box-shadow 0.15s;
+    min-height: 6px;
+    cursor: pointer;
+  }
+  .overlay-box:hover {
+    background: rgba(255, 255, 255, 0.35);
+    box-shadow: 0 0 0 4px rgba(0,0,0,0.06);
+  }
+  .overlay-box.pulse {
+    animation: pulse-flash 0.9s ease-in-out 2;
+    z-index: 5;
+  }
+  @keyframes pulse-flash {
+    0%, 100% {
+      background: rgba(255, 255, 255, 0.12);
+      box-shadow: 0 0 0 0 var(--pulse-color, rgba(0,0,0,0.25));
+    }
+    50% {
+      background: rgba(255, 255, 255, 0.4);
+      box-shadow: 0 0 0 5px var(--pulse-color, rgba(0,0,0,0.18));
+    }
+  }
+
+  .tickets {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .ticket-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--cluster-1);
+    border-radius: 8px;
+    padding: 20px 22px;
+  }
+  .ticket-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .ticket-title {
+    font-size: 1.02rem;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 0 0 6px;
+  }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+  .badge.serious { background: #f9e4e1; color: var(--serious); }
+  .badge.moderate { background: #f7ecd8; color: var(--moderate); }
+  .badge.minor { background: #e7ebec; color: var(--minor); }
+  .badge.reach { background: #eef2f2; color: var(--teal-dark); }
+  .badge.score { background: var(--teal-dark); color: #fff; }
+
+  .root-cause {
+    color: var(--ink-soft);
+    font-size: 0.92rem;
+    margin: 12px 0 10px;
+  }
+  .fix {
+    font-size: 0.92rem;
+    background: #f4f6f5;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .fix strong { color: var(--teal-dark); }
+
+  details {
+    margin-top: 8px;
+  }
+  summary {
+    cursor: pointer;
+    font-size: 0.87rem;
+    color: var(--teal);
+    font-weight: 600;
+  }
+  .ticket-body {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--line);
+    font-size: 0.88rem;
+  }
+  .ticket-body ul { margin: 8px 0; padding-left: 20px; }
+  .ticket-body li { margin-bottom: 4px; }
+  .copy-btn {
+    margin-top: 10px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    border: 1px solid var(--teal);
+    color: var(--teal);
+    background: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .copy-btn:hover { background: var(--teal); color: #fff; }
+  .copy-btn.copied { background: var(--teal-dark); color: #fff; border-color: var(--teal-dark); }
+
+  .no-issues {
+    padding: 24px;
+    text-align: center;
+    color: var(--ink-soft);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  footer {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 20px 24px 60px;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Accessibility Debt Triage</h1>
+  <p class="subtitle">
+    A WCAG scan can be easy to run, but harder to act on. The real question isn't whether a page has
+    violations, it's which ones actually matter, whether forty flagged elements are forty separate
+    bugs or one repeated mistake, and what to change to fix it. This scans a live page with
+    axe-core, the same engine behind Chrome DevTools, then does what a free scanner doesn't: groups
+    violations by shared root cause instead of listing every instance separately, ranks the results
+    by real-world impact, and drafts a ticket for each cluster with the specific fix, not just what's
+    wrong, but exactly what to change to resolve it.
+  </p>
+  <div class="scan-row">
+    <input id="url-input" type="text" value="https://stephpawlowski.com" placeholder="https://example.com" />
+    <button id="scan-btn" type="button">Scan</button>
+  </div>
+  <p class="demo-note">
+    Real, live scan, runs a headless browser against whatever URL you enter. Rate-limited to a
+    handful of scans per visitor per hour to keep it cheap to host.
+  </p>
+  <p class="status-line" id="status-line"></p>
+</header>
+
+<main>
+  <div class="result-meta" id="result-meta"></div>
+
+  <section>
+    <h2>Where the issues are</h2>
+    <div class="legend" id="legend"></div>
+    <div class="screenshot-wrap" id="screenshot-wrap">
+      <img id="screenshot" src="" alt="Full-page screenshot of the scanned page with violations overlaid" />
+    </div>
+  </section>
+
+  <section>
+    <h2>Prioritized tickets</h2>
+    <div class="tickets" id="tickets"></div>
+  </section>
+</main>
+
+<footer>
+  Detection: axe-core. Triage (clustering, prioritization, ticket drafting): claude-sonnet-5.
+  Priority score is severity weight &times; number of affected elements, computed in code, not
+  generated by the model. <a href="https://github.com/stephpawlowski/accessibility-triage-tool">Source on GitHub</a>.
+</footer>
+
+<script>
+// Set this after `wrangler deploy` prints your Worker's URL, e.g.
+// "https://accessibility-triage-worker.YOUR-SUBDOMAIN.workers.dev/scan"
+const WORKER_URL = "https://accessibility-triage-worker.stephrpawlowski.workers.dev/scan";
+
+// Real output from a real run of ai-layer/cluster.js against
+// stephpawlowski.com, shown by default so the page has something to look
+// at before anyone types a URL. The screenshot is loaded separately below
+// since it's too large to usefully inline as base64 here, live scans
+// return their own screenshot directly from the Worker instead.
+const EXAMPLE_RESULT = {
+  url: "https://stephpawlowski.com",
+  scannedAt: "2026-08-14T03:15:52.685Z",
+  triage: {
+    totalNodes: 10,
+    totalClusters: 3,
+    clusters: [
+      {
+        cluster_title: "Secondary text/link color #7a7d7f fails contrast against white (4.14:1 vs required 4.5:1)",
+        root_cause_explanation: "All these elements (body paragraphs, name/subheading, contact info, 'Contact Steph' link, 'SOCIAL' heading, and 'LinkedIn' link) use the same secondary text color #7a7d7f on white, which measures 4.14:1 contrast, just below the 4.5:1 AA requirement for normal-size text. This is a single shared color token used across text, small headings, and links.",
+        suggested_fix: "Update the shared secondary text color token from #7a7d7f to a darker value with at least 4.5:1 contrast on white, e.g. #6b6e70 or #5c5f61, and apply it everywhere this token is used (body text, small H3s, and inline links) so all instances are fixed at once.",
+        ticket: {
+          title: "Fix insufficient contrast on secondary text/link color (#7a7d7f on white)",
+          description: "Multiple text elements and links across the page (body paragraphs, contact info, 'Contact Steph' link, 'SOCIAL' heading, 'LinkedIn' link, and name subheading) use the same secondary text color #7a7d7f on a white background, resulting in a 4.14:1 contrast ratio. This fails the WCAG AA 4.5:1 requirement for normal-size text. Because all instances share the same color value, this is very likely a single design token or CSS variable used site-wide.",
+          acceptance_criteria: [
+            "Identify the shared color token/variable currently set to #7a7d7f and update it to a value with at least 4.5:1 contrast against #ffffff",
+            "All listed elements (body text, contact block, headings, and links) pass automated color-contrast checks after the change",
+            "Verify link text remains visually distinguishable from surrounding body text after the color update",
+            "No regression in visual design approved by design/product stakeholders"
+          ]
+        },
+        reach: 7,
+        worst_impact: "serious",
+        priority_score: 21,
+        nodes: [
+          { boundingBox: { x: 573, y: 1225, width: 389, height: 81 } },
+          { boundingBox: { x: 573, y: 1363, width: 389, height: 135 } },
+          { boundingBox: { x: 150, y: 3976, width: 473, height: 48 } },
+          { boundingBox: { x: 150, y: 4039, width: 473, height: 54 } },
+          { boundingBox: { x: 150, y: 4111, width: 91, height: 22 } },
+          { boundingBox: { x: 657, y: 3976, width: 473, height: 48 } },
+          { boundingBox: { x: 1057, y: 4042, width: 73, height: 22 } }
+        ]
+      },
+      {
+        cluster_title: "Heading color #8ba4a9 fails contrast at large text size (2.63:1 vs required 3:1)",
+        root_cause_explanation: "Both 'About Me' and 'Experience' h2 headings use the same teal-gray heading color (#8ba4a9) on a white background, which only reaches 2.63:1 contrast, below the 3:1 minimum required for large text (30px normal weight).",
+        suggested_fix: "Darken the heading color token from #8ba4a9 to a shade with at least 3:1 contrast on white, e.g. #5f7a80 or darker, and apply it to the shared heading style/class used by these H2 elements so both update together.",
+        ticket: {
+          title: "Fix insufficient contrast on section H2 headings (#8ba4a9 on white)",
+          description: "The 'About Me' and 'Experience' H2 headings share the same style/color token (#8ba4a9) which produces a 2.63:1 contrast ratio against the white page background, failing the WCAG AA 3:1 minimum for large text (22.5pt/30px normal weight). This is likely a single shared heading style in the site's design settings.",
+          acceptance_criteria: [
+            "The heading color token used for H2 elements is updated to a value with at least 3:1 contrast ratio against #ffffff",
+            "Both 'About Me' and 'Experience' headings (and any other H2s using this style) pass automated color-contrast checks",
+            "Visual design of headings is reviewed/approved after the color change"
+          ]
+        },
+        reach: 2,
+        worst_impact: "serious",
+        priority_score: 6,
+        nodes: [
+          { boundingBox: { x: 150, y: 1225, width: 135, height: 42 } },
+          { boundingBox: { x: 150, y: 1702, width: 220, height: 42 } }
+        ]
+      },
+      {
+        cluster_title: "Parallax background container not contained within a landmark region",
+        root_cause_explanation: "The '.Parallax-host-outer' div sits outside of any landmark (header/main/nav/footer), causing page content to be reported as not contained by a landmark region.",
+        suggested_fix: "Wrap or relocate the '.Parallax-host-outer' element inside an appropriate landmark, such as <main> or a <div role=\"main\">, matching how other Squarespace content blocks are structured within the page's landmark regions.",
+        ticket: {
+          title: "Ensure Parallax host container is contained within a page landmark",
+          description: "The '.Parallax-host-outer' element is rendered outside of any ARIA landmark (main, header, nav, footer, etc.), triggering the axe 'region' rule violation. Screen reader users relying on landmark navigation may miss this content or find the page structure confusing.",
+          acceptance_criteria: [
+            "The '.Parallax-host-outer' element (and its content) is contained within an appropriate landmark region (e.g., <main>)",
+            "Automated axe scan no longer reports a 'region' violation for this element",
+            "Page renders and behaves visually the same as before after the structural change"
+          ]
+        },
+        reach: 1,
+        worst_impact: "moderate",
+        priority_score: 2,
+        nodes: [
+          { boundingBox: { x: 0, y: 0, width: 1280, height: 0 } }
+        ]
+      }
+    ]
+  }
+};
+const EXAMPLE_SCREENSHOT_SRC = "example-screenshot.png";
+
+const PALETTE = ["cluster-1", "cluster-2", "cluster-3", "cluster-4", "cluster-5"];
+
+function impactBadgeClass(impact) {
+  if (impact === "critical" || impact === "serious") return "serious";
+  if (impact === "moderate") return "moderate";
+  return "minor";
+}
+
+function setStatus(message, kind) {
+  const el = document.getElementById("status-line");
+  if (!message) {
+    el.className = "status-line";
+    el.textContent = "";
+    return;
+  }
+  el.className = `status-line visible ${kind || ""}`;
+  el.textContent = message;
+}
+
+function render(result) {
+  const img = document.getElementById("screenshot");
+  const wrap = document.getElementById("screenshot-wrap");
+  const legend = document.getElementById("legend");
+  const meta = document.getElementById("result-meta");
+  const ticketsEl = document.getElementById("tickets");
+
+  legend.innerHTML = "";
+  ticketsEl.innerHTML = "";
+  wrap.querySelectorAll(".overlay-box").forEach((b) => b.remove());
+
+  const clusters = [...result.triage.clusters].sort(
+    (a, b) => b.priority_score - a.priority_score
+  );
+  const totalNodes = result.triage.totalNodes;
+
+  meta.innerHTML = `
+    <div><strong>${result.url}</strong></div>
+    <div>${totalNodes} violating element${totalNodes === 1 ? "" : "s"}</div>
+    <div>${clusters.length} root cause${clusters.length === 1 ? "" : "s"}</div>
+    <div>Scanned ${new Date(result.scannedAt).toLocaleString()}</div>
+  `;
+
+  if (totalNodes === 0) {
+    ticketsEl.innerHTML = `<div class="no-issues">axe-core found no violations on this page. (This checks a fixed set of automatable WCAG rules, not full accessibility, some things still need a human.)</div>`;
+  }
+
+  clusters.forEach((cluster, i) => {
+    const colorVar = `var(--${PALETTE[i % PALETTE.length]})`;
+    const swatch = document.createElement("div");
+    swatch.className = "legend-item";
+    swatch.innerHTML = `<span class="legend-swatch" style="background:${colorVar}"></span> ${cluster.cluster_title}`;
+    legend.appendChild(swatch);
+  });
+
+  function drawBoxes() {
+    wrap.querySelectorAll(".overlay-box").forEach((b) => b.remove());
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    if (!naturalW || !naturalH) return;
+
+    clusters.forEach((cluster, i) => {
+      const colorVar = `var(--${PALETTE[i % PALETTE.length]})`;
+      cluster.nodes.forEach((node) => {
+        if (!node.boundingBox) return;
+        const box = node.boundingBox;
+        const el = document.createElement("div");
+        el.className = "overlay-box";
+        el.style.borderColor = colorVar;
+        el.style.setProperty("--pulse-color", colorVar);
+        el.style.left = (box.x / naturalW) * 100 + "%";
+        el.style.top = (box.y / naturalH) * 100 + "%";
+        el.style.width = Math.max(box.width, 4) / naturalW * 100 + "%";
+        el.style.height = Math.max(box.height, 6) / naturalH * 100 + "%";
+        el.dataset.clusterIndex = i;
+        el.title = cluster.cluster_title;
+        wrap.appendChild(el);
+      });
+    });
+  }
+
+  if (img.complete && img.naturalWidth) {
+    drawBoxes();
+  } else {
+    img.addEventListener("load", drawBoxes, { once: true });
+  }
+
+  clusters.forEach((cluster, i) => {
+    const colorVar = `var(--${PALETTE[i % PALETTE.length]})`;
+    const card = document.createElement("div");
+    card.className = "ticket-card";
+    card.style.borderLeftColor = colorVar;
+
+    const ticketMd = `## ${cluster.ticket.title}
+
+${cluster.ticket.description}
+
+**Acceptance criteria**
+${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
+`;
+
+    card.innerHTML = `
+      <div class="ticket-top">
+        <div>
+          <p class="ticket-title">${cluster.cluster_title}</p>
+          <div class="badges">
+            <span class="badge ${impactBadgeClass(cluster.worst_impact)}">${cluster.worst_impact}</span>
+            <span class="badge reach">${cluster.reach} element${cluster.reach === 1 ? "" : "s"}</span>
+            <span class="badge score">priority ${cluster.priority_score}</span>
+          </div>
+        </div>
+      </div>
+      <p class="root-cause">${cluster.root_cause_explanation}</p>
+      <p class="fix"><strong>Suggested fix:</strong> ${cluster.suggested_fix}</p>
+      <details>
+        <summary>View drafted ticket</summary>
+        <div class="ticket-body">
+          <strong>${cluster.ticket.title}</strong>
+          <p>${cluster.ticket.description}</p>
+          <ul>
+            ${cluster.ticket.acceptance_criteria.map((c) => `<li>${c}</li>`).join("")}
+          </ul>
+          <button class="copy-btn" type="button">Copy ticket as Markdown</button>
+        </div>
+      </details>
+    `;
+
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("details")) return;
+      const boxes = wrap.querySelectorAll(`.overlay-box[data-cluster-index="${i}"]`);
+      if (boxes.length === 0) return;
+      boxes[0].scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => {
+        boxes.forEach((b) => {
+          b.classList.remove("pulse");
+          void b.offsetWidth;
+          b.classList.add("pulse");
+          setTimeout(() => b.classList.remove("pulse"), 1900);
+        });
+      }, 500);
+    });
+
+    card.querySelector(".copy-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(ticketMd).then(() => {
+        const btn = e.target;
+        const original = btn.textContent;
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.classList.remove("copied");
+        }, 1500);
+      });
+    });
+
+    ticketsEl.appendChild(card);
+  });
+}
+
+async function runLiveScan() {
+  const input = document.getElementById("url-input");
+  const btn = document.getElementById("scan-btn");
+  const targetUrl = input.value.trim();
+
+  if (!targetUrl) {
+    setStatus("Enter a URL first.", "error");
+    return;
+  }
+
+  if (WORKER_URL.startsWith("REPLACE_WITH")) {
+    setStatus(
+      "Live scanning isn't deployed yet, this page is still pointed at a placeholder Worker URL.",
+      "error"
+    );
+    return;
+  }
+
+  btn.disabled = true;
+  input.disabled = true;
+  setStatus("Scanning… this launches a real headless browser and can take 10–30 seconds.", "loading");
+
+  try {
+    const res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: targetUrl }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setStatus(data.error || `Scan failed (${res.status}).`, "error");
+      return;
+    }
+
+    document.getElementById("screenshot").src = `data:image/png;base64,${data.screenshot}`;
+    render(data);
+    setStatus(`Done. Found ${data.triage.totalNodes} violating element${data.triage.totalNodes === 1 ? "" : "s"}.`, "loading");
+  } catch (err) {
+    setStatus(`Scan failed: ${err.message}`, "error");
+  } finally {
+    btn.disabled = false;
+    input.disabled = false;
+  }
+}
+
+document.getElementById("scan-btn").addEventListener("click", runLiveScan);
+document.getElementById("url-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") runLiveScan();
+});
+
+// Initial paint: show the real example scan so the page isn't empty before
+// anyone types a URL.
+document.getElementById("screenshot").src = EXAMPLE_SCREENSHOT_SRC;
+render(EXAMPLE_RESULT);
+</script>
+
+</body>
+</html>

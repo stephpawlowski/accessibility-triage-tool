@@ -1,0 +1,14 @@
+{
+  "name": "accessibility-triage-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.3.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.123.0"
+  }
+}

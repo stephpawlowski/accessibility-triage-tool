@@ -1,0 +1,14 @@
+{
+  "name": "accessibility-triage-poc",
+  "version": "1.0.0",
+  "description": "Proof of concept: axe-core scan + bounding boxes against a live URL, headless.",
+  "main": "poc.js",
+  "scripts": {
+    "poc": "node poc.js"
+  },
+  "dependencies": {
+    "axe-core": "^4.10.0",
+    "puppeteer": "^23.0.0"
+  },
+  "license": "ISC"
+}

@@ -1,0 +1,11 @@
+name = "accessibility-triage-worker"
+main = "worker.js"
+compatibility_date = "2026-08-14"
+compatibility_flags = ["nodejs_compat"]
+
+[browser]
+binding = "MYBROWSER"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV_2"
+id = "7e1401837526404f9bd1eb148ec463f2"

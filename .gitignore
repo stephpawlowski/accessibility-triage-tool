@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+out/
+.DS_Store
+
+# Stray lockfiles from commands accidentally run in the wrong directory
+# during setup, there's no package.json at these paths so these don't mean
+# anything. poc/package-lock.json and worker/package-lock.json are real
+# and intentionally kept.
+/package-lock.json
+/ai-layer/package-lock.json
