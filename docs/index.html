@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Accessibility Debt Triage</title>
+<title>Accessibility Fix Queue</title>
 <style>
   :root {
     --ink: #2f3a3c;
@@ -106,6 +106,11 @@
     color: var(--teal-dark);
     margin: 0 0 14px;
   }
+  .section-note {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin: -8px 0 14px;
+  }
 
   .legend {
     display: flex;
@@ -169,6 +174,7 @@
     border-left: 5px solid var(--cluster-1);
     border-radius: 8px;
     padding: 20px 22px;
+    cursor: pointer;
   }
   .ticket-top {
     display: flex;
@@ -243,7 +249,7 @@
   .copy-btn:hover { background: var(--teal); color: #fff; }
   .copy-btn.copied { background: var(--teal-dark); color: #fff; border-color: var(--teal-dark); }
 
-  .no-issues {
+  .no-issues, .empty-state {
     padding: 24px;
     text-align: center;
     color: var(--ink-soft);
@@ -264,7 +270,7 @@
 <body>
 
 <header>
-  <h1>Accessibility Debt Triage</h1>
+  <h1>Accessibility Fix Queue</h1>
   <p class="subtitle">
     A WCAG scan can be easy to run, but harder to act on. The real question isn't whether a page has
     violations, it's which ones actually matter, whether forty flagged elements are forty separate
@@ -275,7 +281,7 @@
     wrong, but exactly what to change to resolve it.
   </p>
   <div class="scan-row">
-    <input id="url-input" type="text" value="https://stephpawlowski.com" placeholder="https://example.com" />
+    <input id="url-input" type="text" value="" placeholder="https://example.com" />
     <button id="scan-btn" type="button">Scan</button>
   </div>
   <p class="demo-note">
@@ -291,14 +297,18 @@
   <section>
     <h2>Where the issues are</h2>
     <div class="legend" id="legend"></div>
-    <div class="screenshot-wrap" id="screenshot-wrap">
+    <div class="empty-state" id="screenshot-empty">Enter a URL above and click Scan to see violations highlighted on a live screenshot.</div>
+    <div class="screenshot-wrap" id="screenshot-wrap" style="display: none;">
       <img id="screenshot" src="" alt="Full-page screenshot of the scanned page with violations overlaid" />
     </div>
   </section>
 
   <section>
     <h2>Prioritized tickets</h2>
-    <div class="tickets" id="tickets"></div>
+    <p class="section-note">Click a ticket to see exactly where it shows up in the screenshot above, highlighted.</p>
+    <div class="tickets" id="tickets">
+      <div class="empty-state">Run a scan to see prioritized tickets here.</div>
+    </div>
   </section>
 </main>
 
@@ -312,91 +322,6 @@
 // Set this after `wrangler deploy` prints your Worker's URL, e.g.
 // "https://accessibility-triage-worker.YOUR-SUBDOMAIN.workers.dev/scan"
 const WORKER_URL = "https://accessibility-triage-worker.stephrpawlowski.workers.dev/scan";
-
-// Real output from a real run of ai-layer/cluster.js against
-// stephpawlowski.com, shown by default so the page has something to look
-// at before anyone types a URL. The screenshot is loaded separately below
-// since it's too large to usefully inline as base64 here, live scans
-// return their own screenshot directly from the Worker instead.
-const EXAMPLE_RESULT = {
-  url: "https://stephpawlowski.com",
-  scannedAt: "2026-08-14T03:15:52.685Z",
-  triage: {
-    totalNodes: 10,
-    totalClusters: 3,
-    clusters: [
-      {
-        cluster_title: "Secondary text/link color #7a7d7f fails contrast against white (4.14:1 vs required 4.5:1)",
-        root_cause_explanation: "All these elements (body paragraphs, name/subheading, contact info, 'Contact Steph' link, 'SOCIAL' heading, and 'LinkedIn' link) use the same secondary text color #7a7d7f on white, which measures 4.14:1 contrast, just below the 4.5:1 AA requirement for normal-size text. This is a single shared color token used across text, small headings, and links.",
-        suggested_fix: "Update the shared secondary text color token from #7a7d7f to a darker value with at least 4.5:1 contrast on white, e.g. #6b6e70 or #5c5f61, and apply it everywhere this token is used (body text, small H3s, and inline links) so all instances are fixed at once.",
-        ticket: {
-          title: "Fix insufficient contrast on secondary text/link color (#7a7d7f on white)",
-          description: "Multiple text elements and links across the page (body paragraphs, contact info, 'Contact Steph' link, 'SOCIAL' heading, 'LinkedIn' link, and name subheading) use the same secondary text color #7a7d7f on a white background, resulting in a 4.14:1 contrast ratio. This fails the WCAG AA 4.5:1 requirement for normal-size text. Because all instances share the same color value, this is very likely a single design token or CSS variable used site-wide.",
-          acceptance_criteria: [
-            "Identify the shared color token/variable currently set to #7a7d7f and update it to a value with at least 4.5:1 contrast against #ffffff",
-            "All listed elements (body text, contact block, headings, and links) pass automated color-contrast checks after the change",
-            "Verify link text remains visually distinguishable from surrounding body text after the color update",
-            "No regression in visual design approved by design/product stakeholders"
-          ]
-        },
-        reach: 7,
-        worst_impact: "serious",
-        priority_score: 21,
-        nodes: [
-          { boundingBox: { x: 573, y: 1225, width: 389, height: 81 } },
-          { boundingBox: { x: 573, y: 1363, width: 389, height: 135 } },
-          { boundingBox: { x: 150, y: 3976, width: 473, height: 48 } },
-          { boundingBox: { x: 150, y: 4039, width: 473, height: 54 } },
-          { boundingBox: { x: 150, y: 4111, width: 91, height: 22 } },
-          { boundingBox: { x: 657, y: 3976, width: 473, height: 48 } },
-          { boundingBox: { x: 1057, y: 4042, width: 73, height: 22 } }
-        ]
-      },
-      {
-        cluster_title: "Heading color #8ba4a9 fails contrast at large text size (2.63:1 vs required 3:1)",
-        root_cause_explanation: "Both 'About Me' and 'Experience' h2 headings use the same teal-gray heading color (#8ba4a9) on a white background, which only reaches 2.63:1 contrast, below the 3:1 minimum required for large text (30px normal weight).",
-        suggested_fix: "Darken the heading color token from #8ba4a9 to a shade with at least 3:1 contrast on white, e.g. #5f7a80 or darker, and apply it to the shared heading style/class used by these H2 elements so both update together.",
-        ticket: {
-          title: "Fix insufficient contrast on section H2 headings (#8ba4a9 on white)",
-          description: "The 'About Me' and 'Experience' H2 headings share the same style/color token (#8ba4a9) which produces a 2.63:1 contrast ratio against the white page background, failing the WCAG AA 3:1 minimum for large text (22.5pt/30px normal weight). This is likely a single shared heading style in the site's design settings.",
-          acceptance_criteria: [
-            "The heading color token used for H2 elements is updated to a value with at least 3:1 contrast ratio against #ffffff",
-            "Both 'About Me' and 'Experience' headings (and any other H2s using this style) pass automated color-contrast checks",
-            "Visual design of headings is reviewed/approved after the color change"
-          ]
-        },
-        reach: 2,
-        worst_impact: "serious",
-        priority_score: 6,
-        nodes: [
-          { boundingBox: { x: 150, y: 1225, width: 135, height: 42 } },
-          { boundingBox: { x: 150, y: 1702, width: 220, height: 42 } }
-        ]
-      },
-      {
-        cluster_title: "Parallax background container not contained within a landmark region",
-        root_cause_explanation: "The '.Parallax-host-outer' div sits outside of any landmark (header/main/nav/footer), causing page content to be reported as not contained by a landmark region.",
-        suggested_fix: "Wrap or relocate the '.Parallax-host-outer' element inside an appropriate landmark, such as <main> or a <div role=\"main\">, matching how other Squarespace content blocks are structured within the page's landmark regions.",
-        ticket: {
-          title: "Ensure Parallax host container is contained within a page landmark",
-          description: "The '.Parallax-host-outer' element is rendered outside of any ARIA landmark (main, header, nav, footer, etc.), triggering the axe 'region' rule violation. Screen reader users relying on landmark navigation may miss this content or find the page structure confusing.",
-          acceptance_criteria: [
-            "The '.Parallax-host-outer' element (and its content) is contained within an appropriate landmark region (e.g., <main>)",
-            "Automated axe scan no longer reports a 'region' violation for this element",
-            "Page renders and behaves visually the same as before after the structural change"
-          ]
-        },
-        reach: 1,
-        worst_impact: "moderate",
-        priority_score: 2,
-        nodes: [
-          { boundingBox: { x: 0, y: 0, width: 1280, height: 0 } }
-        ]
-      }
-    ]
-  }
-};
-const EXAMPLE_SCREENSHOT_SRC = "example-screenshot.png";
 
 const PALETTE = ["cluster-1", "cluster-2", "cluster-3", "cluster-4", "cluster-5"];
 
@@ -420,10 +345,13 @@ function setStatus(message, kind) {
 function render(result) {
   const img = document.getElementById("screenshot");
   const wrap = document.getElementById("screenshot-wrap");
+  const emptyState = document.getElementById("screenshot-empty");
   const legend = document.getElementById("legend");
   const meta = document.getElementById("result-meta");
   const ticketsEl = document.getElementById("tickets");
 
+  emptyState.style.display = "none";
+  wrap.style.display = "";
   legend.innerHTML = "";
   ticketsEl.innerHTML = "";
   wrap.querySelectorAll(".overlay-box").forEach((b) => b.remove());
@@ -607,11 +535,6 @@ document.getElementById("scan-btn").addEventListener("click", runLiveScan);
 document.getElementById("url-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") runLiveScan();
 });
-
-// Initial paint: show the real example scan so the page isn't empty before
-// anyone types a URL.
-document.getElementById("screenshot").src = EXAMPLE_SCREENSHOT_SRC;
-render(EXAMPLE_RESULT);
 </script>
 
 </body>
