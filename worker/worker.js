@@ -23,13 +23,24 @@
 
 import puppeteer from "@cloudflare/puppeteer";
 
+// Thrown deliberately, wherever the code already knows exactly what went
+// wrong and how to explain it to a visitor. The top-level handler passes
+// these messages straight through. Anything else that reaches the top level
+// gets pattern-matched against known failure signatures instead, see
+// classifyScanError below, since raw Puppeteer/CDP/fetch error text is not
+// something a non-technical visitor should ever see directly.
+class UserFacingError extends Error {}
+
 const MODEL = "claude-sonnet-5";
 const SEVERITY_WEIGHT = { critical: 4, serious: 3, moderate: 2, minor: 1 };
 const AXE_CORE_URL =
   "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js";
 const RATE_LIMIT_PER_HOUR = 5; // conservative: free tier is 10 browser-minutes/day total, shared across all visitors
 const VIEWPORT = { width: 1280, height: 900 };
-const GOTO_TIMEOUT_MS = 25000;
+const GOTO_TIMEOUT_MS = 35000;
+// Time to let a page settle after DOMContentLoaded before scanning, gives
+// client-rendered content a chance to finish painting.
+const SETTLE_MS = 2000;
 
 // Reused across requests within the same Worker isolate, avoids re-fetching
 // axe-core's ~700KB source on every single scan.
@@ -141,13 +152,62 @@ export default {
       const result = await runScan(body.url, env);
       return withCors(jsonResponse(result, 200));
     } catch (err) {
+      // Full detail (including the original cause, if this is a wrapped
+      // error) always goes to the server-side log. Only the classified
+      // message goes back to the visitor.
       console.error("Scan failed:", err);
+      if (err.cause) console.error("Caused by:", err.cause);
       return withCors(
-        jsonResponse({ error: `Scan failed: ${err.message}` }, 500)
+        jsonResponse({ error: classifyScanError(err) }, 500)
       );
     }
   },
 };
+
+// --- Error classification ---------------------------------------------------
+// Maps the many ways a scan can fail to an accurate, specific, non-technical
+// message. Order matters, first match wins, most specific patterns first.
+
+function classifyScanError(err) {
+  if (err instanceof UserFacingError) return err.message;
+
+  const msg = err.message || "";
+
+  if (/unable to create new browser|too many requests/i.test(msg)) {
+    return "This tool has hit its scanning capacity for right now (a shared limit across all visitors, not just you). Try again in a few minutes.";
+  }
+  if (/navigation timeout/i.test(msg)) {
+    return "That page took too long to load. It may be slow, or stuck loading something in the background. Try again, or try a lighter page on the same site.";
+  }
+  if (/err_name_not_resolved/i.test(msg)) {
+    return "Couldn't find that site. Double-check the URL is correct.";
+  }
+  if (/err_connection_refused|err_connection_reset|err_connection_closed/i.test(msg)) {
+    return "Couldn't connect to that site. It may be down or refusing connections from outside browsers.";
+  }
+  if (/err_connection_timed_out/i.test(msg)) {
+    return "Connecting to that site timed out. It may be slow or temporarily unreachable.";
+  }
+  if (/err_cert_|err_ssl_/i.test(msg)) {
+    return "That site's HTTPS certificate couldn't be verified, so the scan was stopped for safety.";
+  }
+  if (/err_too_many_redirects/i.test(msg)) {
+    return "That URL redirects in a loop and never reaches a real page.";
+  }
+  if (/net::err_/i.test(msg)) {
+    return "Couldn't load that page (a network-level error on the target site's end, not this tool).";
+  }
+  if (/cannot take screenshot|screenshot.*(too large|exceeds|dimension)/i.test(msg)) {
+    return "This page is too long to capture in a single screenshot. Try a lighter page, or a specific section rather than the full homepage.";
+  }
+  if (/couldn't load axe-core/i.test(msg)) {
+    return "Couldn't load the scanning engine from its CDN just now. Try again in a moment.";
+  }
+
+  // Genuinely unrecognized, don't guess, but also don't leak raw
+  // Puppeteer/CDP internals to a visitor.
+  return "Something went wrong scanning that page. Try again, or try a different URL.";
+}
 
 // --- Rate limiting ---------------------------------------------------------
 
@@ -194,60 +254,63 @@ function validateUrl(raw) {
 
 // --- Scan + cluster ----------------------------------------------------------
 
+// Matches the various ways Puppeteer/CDP report a page or session
+// disappearing out from under an in-flight command: a redirect that tears
+// down the JS context, the renderer crashing, or the whole browser session
+// closing. Not informative to a visitor on its own, see runScan below for
+// how this gets classified into a clearer message.
+const TARGET_LOST_ERROR = /target closed|execution context was destroyed|detached frame|session closed/i;
+
 async function runScan(targetUrl, env) {
   const axeSource = await getAxeSource();
 
   // protocolTimeout raised from Puppeteer's default: Browser Rendering's
-  // first connection (cold start) can take longer than the default allows,
-  // this is a known rough edge, not specific to this Worker's code.
+  // first connection (cold start) can take longer than the default
+  // allows, this is a known rough edge, not specific to this Worker's
+  // code.
   const browser = await puppeteer.launch(env.MYBROWSER, {
     protocolTimeout: 120000,
   });
-  let violations;
-  let screenshotBase64;
+
+  // Puppeteer fires the page's "error" event specifically when the
+  // renderer process itself crashes (e.g. out of memory on a very heavy
+  // page), distinct from a normal navigation or a deliberately closed tab.
+  // If we see this fire, a later "target closed" style failure can be
+  // reported as a real resource crash instead of a generic error. If it
+  // never fires but the target still closes, that's more consistent with
+  // something external ending the session (a site's bot detection, or the
+  // browser platform reclaiming it), so it gets a different message.
+  let rendererCrashed = false;
+
   try {
     const page = await browser.newPage();
+    page.on("error", () => {
+      rendererCrashed = true;
+    });
     await page.setViewport(VIEWPORT);
-    await page.goto(targetUrl, {
-      waitUntil: "networkidle0",
-      timeout: GOTO_TIMEOUT_MS,
-    });
-
-    await page.evaluate(axeSource);
-    const results = await page.evaluate(async () => {
-      // eslint-disable-next-line no-undef
-      return await axe.run(document, { resultTypes: ["violations"] });
-    });
-    violations = results.violations;
-
-    for (const violation of violations) {
-      for (const node of violation.nodes) {
-        const selector = flattenTarget(node.target);
-        node.boundingBox = selector
-          ? await page.evaluate((sel) => {
-              const el = document.querySelector(sel);
-              if (!el) return null;
-              const r = el.getBoundingClientRect();
-              if (r.width === 0 && r.height === 0) return null;
-              return {
-                x: Math.round(r.x),
-                y: Math.round(r.y),
-                width: Math.round(r.width),
-                height: Math.round(r.height),
-              };
-            }, selector)
-          : null;
+    await navigateAndSettle(page, targetUrl);
+    const { violations, screenshotBase64 } = await scanPage(page, axeSource);
+    return await buildScanResult(targetUrl, violations, screenshotBase64, env);
+  } catch (err) {
+    if (TARGET_LOST_ERROR.test(err.message || "")) {
+      if (rendererCrashed) {
+        throw new UserFacingError(
+          "This page is too resource-heavy to scan right now (the browser ran out of memory partway through). Try again, or try a lighter page on the same site.",
+          { cause: err }
+        );
       }
+      throw new UserFacingError(
+        "This site appears to block automated browser scanning, which some sites do deliberately (bot/anti-automation protection). Try a different URL.",
+        { cause: err }
+      );
     }
-
-    screenshotBase64 = await page.screenshot({
-      fullPage: true,
-      encoding: "base64",
-    });
+    throw err;
   } finally {
     await browser.close();
   }
+}
 
+async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
   const flatNodes = [];
   for (const violation of violations) {
     for (const node of violation.nodes) {
@@ -290,10 +353,76 @@ async function runScan(targetUrl, env) {
   };
 }
 
+async function navigateAndSettle(page, targetUrl) {
+  // "load" (all initial resources finished) is more reliable than
+  // "networkidle*" for arbitrary real-world sites: pages with any
+  // persistent connection (analytics, chat widgets, live dashboards) never
+  // go network-idle and would time out even after finishing their visible
+  // load. The settle window afterward gives client-side redirects/hydration
+  // a chance to happen before we start evaluating against the page.
+  const response = await page.goto(targetUrl, {
+    waitUntil: "load",
+    timeout: GOTO_TIMEOUT_MS,
+  });
+
+  // page.goto doesn't throw on a 4xx/5xx response, the navigation itself
+  // still "succeeds," it just lands on an error page. Surface that clearly
+  // rather than silently scanning a 404/500 page and reporting on whatever
+  // (probably minimal, generic) violations that page happens to have.
+  if (response && !response.ok()) {
+    throw new UserFacingError(
+      `That page returned a ${response.status()} instead of loading normally. Double-check the URL.`
+    );
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+}
+
+async function scanPage(page, axeSource) {
+  await page.evaluate(axeSource);
+  const results = await page.evaluate(async () => {
+    // eslint-disable-next-line no-undef
+    return await axe.run(document, { resultTypes: ["violations"] });
+  });
+  const violations = results.violations;
+
+  for (const violation of violations) {
+    for (const node of violation.nodes) {
+      const selector = flattenTarget(node.target);
+      node.boundingBox = selector
+        ? await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) return null;
+            return {
+              x: Math.round(r.x),
+              y: Math.round(r.y),
+              width: Math.round(r.width),
+              height: Math.round(r.height),
+            };
+          }, selector)
+        : null;
+    }
+  }
+
+  const screenshotBase64 = await page.screenshot({
+    fullPage: true,
+    encoding: "base64",
+  });
+
+  return { violations, screenshotBase64 };
+}
+
 async function getAxeSource() {
   if (cachedAxeSource) return cachedAxeSource;
   const res = await fetch(AXE_CORE_URL);
-  if (!res.ok) throw new Error("Couldn't load axe-core from CDN.");
+  if (!res.ok) {
+    throw new UserFacingError(
+      "Couldn't load the scanning engine from its CDN just now. Try again in a moment.",
+      { cause: new Error(`axe-core CDN fetch failed: ${res.status}`) }
+    );
+  }
   cachedAxeSource = await res.text();
   return cachedAxeSource;
 }
@@ -308,7 +437,7 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       messages: [
         {
@@ -327,12 +456,36 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errText}`);
+    const cause = new Error(`Claude API error ${response.status}: ${errText}`);
+    if (response.status === 429) {
+      throw new UserFacingError(
+        "The AI service that drafts tickets is temporarily rate-limited. Try again in a minute.",
+        { cause }
+      );
+    }
+    if (response.status >= 500) {
+      throw new UserFacingError(
+        "The AI service that drafts tickets is temporarily unavailable. Try again shortly.",
+        { cause }
+      );
+    }
+    // 4xx other than 429 (auth, bad request, etc.) is a configuration
+    // problem on this project's end, not something the visitor caused or
+    // can act on.
+    throw new UserFacingError(
+      "Something's misconfigured generating the results for this scan. Try again, or check back later.",
+      { cause }
+    );
   }
 
   const data = await response.json();
   const toolUse = data.content.find((b) => b.type === "tool_use");
-  if (!toolUse) throw new Error("Model didn't return the expected tool call.");
+  if (!toolUse) {
+    throw new UserFacingError(
+      "Couldn't generate prioritized tickets for this scan's results. Try again.",
+      { cause: new Error("Model didn't return the expected tool call.") }
+    );
+  }
 
   const { clusters } = toolUse.input;
 
