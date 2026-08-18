@@ -47,6 +47,10 @@ them. What none of them do is anything with the results beyond listing them,
 a product team still has to figure out what to fix first and why. That's a
 triage problem, not a detection problem, which is the actual gap this fills.
 
+## Not every site will scan successfully
+
+The live scan runs a real headless browser against whatever URL is entered, and a few kinds of sites won't complete: some run bot/anti-automation protection that closes automated browser sessions outright, some are heavy enough (large embedded video, lots of animation) to run the browser out of memory mid-scan, and some are just too slow to finish loading before the timeout. When this happens, the tool reports a specific, honest reason (blocked, too resource-heavy, timed out, and so on) instead of a raw error or a silently wrong result. See the project journal for the vercel.com investigation that led to this: the root cause there was never fully confirmed (likely bot protection, possibly the page's size, maybe both), and that turned out to be the more useful lesson, a public "scan any URL" tool needs to degrade honestly on sites it can't fully process, not chase every possible site into working.
+
 ## Architecture
 
 ```

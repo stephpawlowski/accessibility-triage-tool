@@ -286,7 +286,10 @@
   </div>
   <p class="demo-note">
     Real, live scan, runs a headless browser against whatever URL you enter. Rate-limited to a
-    handful of scans per visitor per hour to keep it cheap to host.
+    handful of scans per visitor per hour to keep it cheap to host. Not every site will scan
+    successfully: some run bot-protection that blocks automated browsers, some are heavy enough
+    to run the scanner out of memory, and some are just slow to load. If a scan fails, you'll get
+    a specific reason rather than a generic error.
   </p>
   <p class="status-line" id="status-line"></p>
 </header>
