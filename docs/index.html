@@ -4,6 +4,10 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Accessibility Fix Queue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.47.0/iconfont/tabler-icons.min.css" />
 <style>
   :root {
     --ink: #2f3a3c;
@@ -22,6 +26,7 @@
     --cluster-3: #b8862f;
     --cluster-4: #6a4c93;
     --cluster-5: #3d8c5c;
+    --font-voice: "Fraunces", Georgia, serif;
   }
   * { box-sizing: border-box; }
   body {
@@ -37,14 +42,32 @@
     margin: 0 auto;
   }
   h1 {
-    font-size: 2rem;
+    font-family: var(--font-voice);
+    font-weight: 600;
+    font-size: 2.1rem;
     color: var(--teal-dark);
     margin: 0 0 8px;
+  }
+  .byline {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin: 0 0 20px;
+  }
+  .byline a {
+    color: var(--teal);
+    text-decoration: underline;
+  }
+  .byline a:hover,
+  .byline a:focus-visible {
+    color: var(--teal-dark);
   }
   .subtitle {
     color: var(--ink-soft);
     max-width: 640px;
-    margin: 0 0 28px;
+    margin: 0 0 14px;
+  }
+  .subtitle:last-of-type {
+    margin-bottom: 28px;
   }
   .scan-row {
     display: flex;
@@ -74,7 +97,13 @@
   .demo-note {
     font-size: 0.85rem;
     color: var(--ink-soft);
+    margin: 0 0 10px;
+  }
+  .demo-note:first-of-type {
     margin-top: 10px;
+  }
+  .demo-note:last-of-type {
+    margin-bottom: 0;
   }
   .status-line {
     font-size: 0.88rem;
@@ -90,19 +119,61 @@
     padding: 0 24px 80px;
   }
   .result-meta {
-    display: flex;
-    gap: 24px;
-    flex-wrap: wrap;
     padding: 16px 0 24px;
     border-bottom: 1px solid var(--line);
     margin-bottom: 28px;
-    font-size: 0.9rem;
-    color: var(--ink-soft);
   }
-  .result-meta strong { color: var(--ink); }
+  .result-meta .scan-meta-line {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 0.88rem;
+    color: var(--ink-soft);
+    margin-bottom: 16px;
+  }
+  .result-meta .scan-meta-line strong { color: var(--ink); }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+  }
+  .stat-value {
+    font-family: var(--font-voice);
+    font-weight: 600;
+    font-size: 1.6rem;
+    color: var(--teal-dark);
+    margin: 0;
+  }
+  .stat-label {
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    margin: 2px 0 0;
+  }
+  .severity-summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .badge.with-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .badge.with-icon i { font-size: 0.9rem; }
 
   section h2 {
-    font-size: 1.15rem;
+    font-family: var(--font-voice);
+    font-weight: 600;
+    font-size: 1.3rem;
     color: var(--teal-dark);
     margin: 0 0 14px;
   }
@@ -271,25 +342,41 @@
 
 <header>
   <h1>Accessibility Fix Queue</h1>
+  <p class="byline">
+    By Stephanie Pawlowski &middot;
+    <a href="https://stephpawlowski.com/">About Me</a> &middot;
+    <a href="https://www.linkedin.com/in/stephaniepawlowski/">LinkedIn</a> &middot;
+    <a href="https://stephpawlowski.com/side-projects">Side Projects</a>
+  </p>
   <p class="subtitle">
-    A WCAG scan can be easy to run, but harder to act on. The real question isn't whether a page has
-    violations, it's which ones actually matter, whether forty flagged elements are forty separate
-    bugs or one repeated mistake, and what to change to fix it. This scans a live page with
-    axe-core, the same engine behind Chrome DevTools, then does what a free scanner doesn't: groups
-    violations by shared root cause instead of listing every instance separately, ranks the results
-    by real-world impact, and drafts a ticket for each cluster with the specific fix, not just what's
-    wrong, but exactly what to change to resolve it.
+    A WCAG scan can be easy to run, but harder to act on. As a product leader, knowing which
+    violations to prioritize - and how to resolve them - will save time in navigating team
+    backlogs.
+  </p>
+  <p class="subtitle">
+    This tool will scan a live page using axe-core, which is the same engine behind Chrome
+    Dev Tools. Then it picks up what a free scanner won't do: it groups violations by a shared
+    root cause, then ranks results by real-world impact. From there, it will draft a ticket for
+    each specific fix.
   </p>
   <div class="scan-row">
     <input id="url-input" type="text" value="" placeholder="https://example.com" />
     <button id="scan-btn" type="button">Scan</button>
   </div>
   <p class="demo-note">
-    Real, live scan, runs a headless browser against whatever URL you enter. Rate-limited to a
-    handful of scans per visitor per hour to keep it cheap to host. Not every site will scan
-    successfully: some run bot-protection that blocks automated browsers, some are heavy enough
-    to run the scanner out of memory, and some are just slow to load. If a scan fails, you'll get
-    a specific reason rather than a generic error.
+    Conduct a real, live scan. It runs in a headless browser against whatever URL you enter.
+  </p>
+  <p class="demo-note">
+    <strong>Note:</strong> this is rate-limited to a handful of scans per visitor, per hour, to
+    keep it cheap to host.
+  </p>
+  <p class="demo-note">
+    Not every site will scan successfully: some run bot-protection that will block automated
+    browsers, others are log-in protected to see meaningful content. Some are heavy enough to
+    run the free scanner out of memory, and some are just slow to load.
+  </p>
+  <p class="demo-note">
+    If a scan fails, you'll get a specific reason rather than a generic error.
   </p>
   <p class="status-line" id="status-line"></p>
 </header>
@@ -308,7 +395,7 @@
 
   <section>
     <h2>Prioritized tickets</h2>
-    <p class="section-note">Click a ticket to see exactly where it shows up in the screenshot above, highlighted.</p>
+    <p class="section-note"><strong>Click a ticket to see exactly where it shows up in the screenshot above, highlighted.</strong></p>
     <div class="tickets" id="tickets">
       <div class="empty-state">Run a scan to see prioritized tickets here.</div>
     </div>
@@ -332,6 +419,12 @@ function impactBadgeClass(impact) {
   if (impact === "critical" || impact === "serious") return "serious";
   if (impact === "moderate") return "moderate";
   return "minor";
+}
+
+function impactIconClass(impact) {
+  if (impact === "critical" || impact === "serious") return "ti-alert-triangle";
+  if (impact === "moderate") return "ti-alert-circle";
+  return "ti-info-circle";
 }
 
 function setStatus(message, kind) {
@@ -364,11 +457,43 @@ function render(result) {
   );
   const totalNodes = result.triage.totalNodes;
 
+  const topPriority = clusters.length ? clusters[0].priority_score : 0;
+
+  const severityCounts = clusters.reduce((counts, c) => {
+    const key = impactBadgeClass(c.worst_impact);
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+  const severityOrder = ["serious", "moderate", "minor"];
+  const severityLabel = { serious: "serious", moderate: "moderate", minor: "minor" };
+  const severityHtml = severityOrder
+    .filter((key) => severityCounts[key])
+    .map((key) => {
+      const impact = key === "serious" ? "serious" : key;
+      return `<span class="badge with-icon ${key}"><i class="ti ${impactIconClass(impact)}" aria-hidden="true"></i>${severityCounts[key]} ${severityLabel[key]}</span>`;
+    })
+    .join("");
+
   meta.innerHTML = `
-    <div><strong>${result.url}</strong></div>
-    <div>${totalNodes} violating element${totalNodes === 1 ? "" : "s"}</div>
-    <div>${clusters.length} root cause${clusters.length === 1 ? "" : "s"}</div>
-    <div>Scanned ${new Date(result.scannedAt).toLocaleString()}</div>
+    <div class="scan-meta-line">
+      <div><strong>${result.url}</strong></div>
+      <div>Scanned ${new Date(result.scannedAt).toLocaleString()}</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <p class="stat-value">${totalNodes}</p>
+        <p class="stat-label">violating element${totalNodes === 1 ? "" : "s"}</p>
+      </div>
+      <div class="stat-card">
+        <p class="stat-value">${clusters.length}</p>
+        <p class="stat-label">root cause${clusters.length === 1 ? "" : "s"}</p>
+      </div>
+      <div class="stat-card">
+        <p class="stat-value">${topPriority}</p>
+        <p class="stat-label">top priority score</p>
+      </div>
+    </div>
+    ${severityHtml ? `<div class="severity-summary">${severityHtml}</div>` : ""}
   `;
 
   if (totalNodes === 0) {
@@ -434,7 +559,7 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
         <div>
           <p class="ticket-title">${cluster.cluster_title}</p>
           <div class="badges">
-            <span class="badge ${impactBadgeClass(cluster.worst_impact)}">${cluster.worst_impact}</span>
+            <span class="badge with-icon ${impactBadgeClass(cluster.worst_impact)}"><i class="ti ${impactIconClass(cluster.worst_impact)}" aria-hidden="true"></i>${cluster.worst_impact}</span>
             <span class="badge reach">${cluster.reach} element${cluster.reach === 1 ? "" : "s"}</span>
             <span class="badge score">priority ${cluster.priority_score}</span>
           </div>
