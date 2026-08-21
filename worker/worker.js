@@ -79,11 +79,6 @@ const TOOL_SCHEMA = {
               description:
                 "Concrete, specific fix. Reference the actual failing value (e.g. the hex color and what it should become) when the data provides one, not generic advice.",
             },
-            caveat: {
-              type: "string",
-              description:
-                "Optional. Only include this if one or more nodes in this cluster has a non-null decorativeSignal. Note plainly which signal(s) were found (e.g. aria-hidden=\"true\", role=\"presentation\"). The site's own developers already excluded that element from assistive tech and/or keyboard navigation, so it may be decorative (e.g. part of an illustrative graphic or animation) rather than a real interactive control, even though it still fails a visual check like color-contrast. Omit this field entirely when no node in the cluster has a decorativeSignal. Never use this as a reason to drop or downweight the node, only to flag it for human review.",
-            },
             ticket: {
               type: "object",
               properties: {
@@ -119,7 +114,7 @@ Do not cluster purely by axe rule id. Two nodes can fail the same rule for genui
 
 Every node index must appear in exactly one cluster. Do not invent node indices that weren't provided. Be specific in fixes and tickets, reference actual values (colors, sizes) from the data rather than generic advice.
 
-Each node includes a decorativeSignal field, precomputed against the element's full (untruncated) HTML. It lists things like aria-hidden="true", tabindex="-1", role="presentation"/"none", or inert when present, or is null when none apply. These mean the site's own developers already excluded that element from assistive technology and/or keyboard navigation on purpose, so it is likely decorative (part of an illustrative graphic, animation, or embedded mockup) rather than a real interactive control, even though it can still fail a purely visual check like color-contrast. When decorativeSignal is non-null for some or all nodes in a cluster, still cluster and report the node normally, but add a short caveat naming the specific signal(s) found, so a human can judge whether it is worth fixing. Never use this as a reason to drop, exclude, or downweight a node, only to flag it.`;
+Each node includes a decorativeSignal field (e.g. aria-hidden="true", tabindex="-1", role="presentation"/"none", inert, or null). This is informational only, a separate part of this system already turns it into a caveat shown to the user, so don't mention it yourself in root_cause_explanation or suggested_fix, and never use it as a reason to drop, exclude, or downweight a node from clustering.`;
 
 export default {
   async fetch(request, env) {
@@ -334,6 +329,26 @@ function detectDecorativeSignal(html) {
   return signals.length ? signals.join(", ") : null;
 }
 
+// Whether a cluster gets a decorative-node caveat used to be left to Claude as
+// an optional field, it was unreliable in practice: a real, live scan of
+// cloudflare.com came back with no caveat even though one of the two flagged
+// nodes clearly had decorativeSignal set. Every input this needs
+// (decorativeSignal per node) is already computed deterministically, so build
+// the caveat text in code instead of hoping the model remembers to mention
+// it, same reasoning as priority_score being computed in code rather than
+// asked of the model.
+function buildCaveat(nodes) {
+  const flagged = nodes.filter((n) => n.decorativeSignal);
+  if (flagged.length === 0) return null;
+  const uniqueSignals = [...new Set(flagged.map((n) => n.decorativeSignal))];
+  const scope =
+    flagged.length === nodes.length
+      ? `${flagged.length === 1 ? "This element is" : "All elements in this cluster are"}`
+      : `${flagged.length} of ${nodes.length} elements in this cluster are`;
+  const pronoun = flagged.length === 1 && flagged.length === nodes.length ? "it" : "them";
+  return `${scope} marked ${uniqueSignals.join("; ")} in the page's own markup, meaning the site's developers already excluded ${pronoun} from assistive tech and/or keyboard navigation. That makes ${pronoun} likely decorative (part of an illustrative graphic, animation, or mockup) rather than a real interactive control, even though it can still fail a purely visual check like this one.`;
+}
+
 async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
   const flatNodes = [];
   for (const violation of violations) {
@@ -522,6 +537,9 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
       return w > (SEVERITY_WEIGHT[worst] || 0) ? n.impact : worst;
     }, nodes[0]?.impact || "minor");
     const priority_score = (SEVERITY_WEIGHT[worstImpact] || 1) * reach;
+    // Caveat is computed here, deterministically, not taken from the model
+    // (see buildCaveat above for why).
+    const caveat = buildCaveat(nodes);
     // Only boundingBox is ever used by the frontend (to draw the overlay
     // boxes on the screenshot). The rest of each flatNode (html, target,
     // failureSummary, help) is the scanned page's own raw markup/text, not
@@ -530,7 +548,7 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
     // removes a latent stored-XSS surface for any future feature that might
     // render node data straight from the API response.
     const publicNodes = nodes.map((n) => ({ boundingBox: n.boundingBox }));
-    return { ...cluster, reach, worst_impact: worstImpact, priority_score, nodes: publicNodes };
+    return { ...cluster, reach, worst_impact: worstImpact, priority_score, caveat, nodes: publicNodes };
   });
 
   enrichedClusters.sort((a, b) => b.priority_score - a.priority_score);
