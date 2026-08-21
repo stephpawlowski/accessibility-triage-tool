@@ -458,6 +458,18 @@ function impactBadgeClass(impact) {
   return "minor";
 }
 
+// AI-drafted text (root cause explanations, suggested fixes, ticket bodies) can
+// legitimately contain literal HTML tag names, e.g. "wrap it in a <main> landmark".
+// Injecting that straight into innerHTML makes the browser parse "<main>" as a
+// real tag instead of showing it as text, silently swallowing words and forcing
+// odd line breaks around every landmark/element name mentioned. Escape any
+// AI-generated string before it goes into a template literal that becomes innerHTML.
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
 function impactIconClass(impact) {
   if (impact === "critical" || impact === "serious") return "ti-alert-triangle";
   if (impact === "moderate") return "ti-alert-circle";
@@ -541,7 +553,7 @@ function render(result) {
     const colorVar = `var(--${PALETTE[i % PALETTE.length]})`;
     const swatch = document.createElement("div");
     swatch.className = "legend-item";
-    swatch.innerHTML = `<span class="legend-swatch" style="background:${colorVar}"></span> ${cluster.cluster_title}`;
+    swatch.innerHTML = `<span class="legend-swatch" style="background:${colorVar}"></span> ${escapeHtml(cluster.cluster_title)}`;
     legend.appendChild(swatch);
   });
 
@@ -594,7 +606,7 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
     card.innerHTML = `
       <div class="ticket-top">
         <div>
-          <p class="ticket-title">${cluster.cluster_title}</p>
+          <p class="ticket-title">${escapeHtml(cluster.cluster_title)}</p>
           <div class="badges">
             <span class="badge with-icon ${impactBadgeClass(cluster.worst_impact)}"><i class="ti ${impactIconClass(cluster.worst_impact)}" aria-hidden="true"></i>${cluster.worst_impact}</span>
             <span class="badge reach">${cluster.reach} element${cluster.reach === 1 ? "" : "s"}</span>
@@ -607,18 +619,18 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
       </button>
       ${
         cluster.caveat
-          ? `<div class="caveat"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>${cluster.caveat}</span></div>`
+          ? `<div class="caveat"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>${escapeHtml(cluster.caveat)}</span></div>`
           : ""
       }
-      <p class="root-cause">${cluster.root_cause_explanation}</p>
-      <p class="fix"><strong>Suggested fix:</strong> ${cluster.suggested_fix}</p>
+      <p class="root-cause">${escapeHtml(cluster.root_cause_explanation)}</p>
+      <p class="fix"><strong>Suggested fix:</strong> ${escapeHtml(cluster.suggested_fix)}</p>
       <details>
         <summary>View drafted ticket</summary>
         <div class="ticket-body">
-          <strong>${cluster.ticket.title}</strong>
-          <p>${cluster.ticket.description}</p>
+          <strong>${escapeHtml(cluster.ticket.title)}</strong>
+          <p>${escapeHtml(cluster.ticket.description)}</p>
           <ul>
-            ${cluster.ticket.acceptance_criteria.map((c) => `<li>${c}</li>`).join("")}
+            ${cluster.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}
           </ul>
           <button class="copy-btn" type="button">Copy ticket as Markdown</button>
         </div>
