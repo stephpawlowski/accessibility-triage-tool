@@ -590,6 +590,23 @@ function render(result) {
   }
 
   clusters.forEach((cluster, i) => {
+    // Rendering one ticket is wrapped in its own try/catch: a single
+    // malformed cluster (unexpected data, a selector that doesn't match for
+    // some new reason) shouldn't be able to throw mid-loop and silently
+    // drop every remaining ticket, which is exactly what happened when a
+    // .locate-btn/.copy-btn lookup came back null on an earlier scan.
+    try {
+      renderTicketCard(cluster, i);
+    } catch (err) {
+      console.error(`Failed to render ticket ${i}:`, err);
+      const errorCard = document.createElement("div");
+      errorCard.className = "ticket-card";
+      errorCard.textContent = `Couldn't render this ticket (${err.message}). Other tickets below are unaffected.`;
+      ticketsEl.appendChild(errorCard);
+    }
+  });
+
+  function renderTicketCard(cluster, i) {
     const colorVar = `var(--${PALETTE[i % PALETTE.length]})`;
     const card = document.createElement("div");
     card.className = "ticket-card";
@@ -666,7 +683,7 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
     });
 
     ticketsEl.appendChild(card);
-  });
+  }
 }
 
 async function runLiveScan() {
