@@ -79,6 +79,11 @@ const TOOL_SCHEMA = {
               description:
                 "Concrete, specific fix. Reference the actual failing value (e.g. the hex color and what it should become) when the data provides one, not generic advice.",
             },
+            caveat: {
+              type: "string",
+              description:
+                "Optional. Only include this if the raw html for one or more nodes in this cluster shows aria-hidden=\"true\" and/or tabindex=\"-1\". Note plainly that the site's own developers already excluded that element from assistive tech and keyboard navigation, so it may be decorative (e.g. part of an illustrative graphic or animation) rather than a real interactive control, even though it still fails a visual check like color-contrast. Omit this field entirely when no such signal is present. Never use this as a reason to drop or downweight the node, only to flag it for human review.",
+            },
             ticket: {
               type: "object",
               properties: {
@@ -112,7 +117,9 @@ You will receive a flattened list of individual violating DOM nodes found by axe
 
 Do not cluster purely by axe rule id. Two nodes can fail the same rule for genuinely different reasons (e.g. two different text colors both failing color-contrast against different thresholds), and those are two different clusters, not one. Conversely, nodes with different exact selectors can still be the same real bug if they clearly share a color, a component, or a pattern.
 
-Every node index must appear in exactly one cluster. Do not invent node indices that weren't provided. Be specific in fixes and tickets, reference actual values (colors, sizes) from the data rather than generic advice.`;
+Every node index must appear in exactly one cluster. Do not invent node indices that weren't provided. Be specific in fixes and tickets, reference actual values (colors, sizes) from the data rather than generic advice.
+
+Each node's raw html snippet is included. Check it for aria-hidden="true" and/or tabindex="-1". These are strong signals that the site's own developers already excluded that specific element from assistive technology and keyboard navigation on purpose, meaning it is likely decorative (part of an illustrative graphic, animation, or embedded mockup) rather than a real interactive control, even though it can still fail a purely visual check like color-contrast. When you see this signal, still cluster and report the node normally, but add a short caveat noting it, so a human can judge whether it is worth fixing. Never use this signal as a reason to drop, exclude, or downweight a node, only to flag it.`;
 
 export default {
   async fetch(request, env) {
@@ -320,7 +327,7 @@ async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
         impact: violation.impact,
         help: violation.help,
         target: node.target,
-        html: truncate(node.html, 200),
+        html: truncate(node.html, 300),
         failureSummary: node.failureSummary,
         boundingBox: node.boundingBox,
       });

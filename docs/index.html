@@ -306,6 +306,19 @@
   }
   .fix strong { color: var(--teal-dark); }
 
+  .caveat {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.85rem;
+    background: #f7ecd8;
+    color: #6b5324;
+    border-radius: 6px;
+    padding: 9px 12px;
+    margin: 10px 0;
+  }
+  .caveat i { color: var(--moderate); font-size: 1rem; margin-top: 1px; flex-shrink: 0; }
+
   details {
     margin-top: 8px;
   }
@@ -592,6 +605,11 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
       <button class="locate-btn" type="button">
         <i class="ti ti-zoom-in" aria-hidden="true"></i> Show in screenshot
       </button>
+      ${
+        cluster.caveat
+          ? `<div class="caveat"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>${cluster.caveat}</span></div>`
+          : ""
+      }
       <p class="root-cause">${cluster.root_cause_explanation}</p>
       <p class="fix"><strong>Suggested fix:</strong> ${cluster.suggested_fix}</p>
       <details>
