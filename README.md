@@ -61,9 +61,14 @@ ai-layer/   Task 2: the Claude clustering/prioritization/ticket layer,
 frontend/   Task 3: the visual overlay + ticket card UI, built as a static
             prototype against real captured data.
 worker/     Task 4: the Cloudflare Worker that ties it all together for a
-            live, public "scan any URL" tool (Browser Rendering + axe-core
-            + Claude, all in one request).
-docs/       The live dashboard, served via GitHub Pages, calls the Worker.
+            live, public "scan any URL" tool. Cloudflare Browser Rendering
+            (Puppeteer under the hood) loads the page, axe-core scans it,
+            Claude (claude-sonnet-5) clusters and drafts tickets, Workers KV
+            tracks the per-visitor rate limit, all in one request.
+docs/       The live dashboard: plain HTML/CSS/JS, no framework, served via
+            GitHub Pages, calls the Worker. Headings use Fraunces (Google
+            Fonts), severity badges use Tabler's icon font, both loaded from
+            CDN.
 ```
 
 Each stage was built and confirmed working on its own, against real data,
