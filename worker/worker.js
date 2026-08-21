@@ -312,23 +312,6 @@ async function runScan(targetUrl, env) {
   }
 }
 
-// Signals that the site's own developers already excluded this element from
-// assistive tech and/or keyboard navigation, meaning it's likely decorative
-// (an illustrative graphic, animation, or mockup) rather than a real
-// interactive control, even though it can still fail a purely visual check
-// like color-contrast. Checked against the FULL node.html, not the truncated
-// version below, so a long class list or many preceding attributes can't
-// push the signal past a length cutoff and silently hide it from the model.
-function detectDecorativeSignal(html) {
-  if (!html) return null;
-  const signals = [];
-  if (/\baria-hidden\s*=\s*["']true["']/i.test(html)) signals.push('aria-hidden="true"');
-  if (/\btabindex\s*=\s*["']-1["']/i.test(html)) signals.push('tabindex="-1"');
-  if (/\brole\s*=\s*["'](?:presentation|none)["']/i.test(html)) signals.push('role="presentation"/"none"');
-  if (/(?:^|\s)inert(?=\s|=|>|$)/i.test(html)) signals.push("inert");
-  return signals.length ? signals.join(", ") : null;
-}
-
 // Whether a cluster gets a decorative-node caveat used to be left to Claude as
 // an optional field, it was unreliable in practice: a real, live scan of
 // cloudflare.com came back with no caveat even though one of the two flagged
@@ -360,7 +343,7 @@ async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
         help: violation.help,
         target: node.target,
         html: truncate(node.html, 300),
-        decorativeSignal: detectDecorativeSignal(node.html),
+        decorativeSignal: node.decorativeSignal,
         failureSummary: node.failureSummary,
         boundingBox: node.boundingBox,
       });
@@ -429,20 +412,42 @@ async function scanPage(page, axeSource) {
   for (const violation of violations) {
     for (const node of violation.nodes) {
       const selector = flattenTarget(node.target);
-      node.boundingBox = selector
+      const nodeData = selector
         ? await page.evaluate((sel) => {
             const el = document.querySelector(sel);
-            if (!el) return null;
+            if (!el) return { boundingBox: null, decorativeSignal: null };
             const r = el.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) return null;
-            return {
-              x: Math.round(r.x),
-              y: Math.round(r.y),
-              width: Math.round(r.width),
-              height: Math.round(r.height),
-            };
+            const boundingBox =
+              r.width === 0 && r.height === 0
+                ? null
+                : {
+                    x: Math.round(r.x),
+                    y: Math.round(r.y),
+                    width: Math.round(r.width),
+                    height: Math.round(r.height),
+                  };
+
+            // Real DOM check, not a regex on one node's own outerHTML: an
+            // element with none of these attributes on itself can still be
+            // inside a container the site marked aria-hidden/presentation/
+            // inert, which hides the whole subtree from assistive tech just
+            // as much as if the leaf element carried the attribute directly
+            // (a common real pattern: one wrapper around a whole decorative
+            // graphic, not the attribute repeated on every child). closest()
+            // starts from the element itself, so a self-attribute is still
+            // caught too. tabindex is deliberately NOT ancestor-checked, a
+            // parent's tabindex has no bearing on a child's focusability.
+            const signals = [];
+            if (el.closest('[aria-hidden="true"]')) signals.push('aria-hidden="true"');
+            if (el.closest('[role="presentation"], [role="none"]')) signals.push('role="presentation"/"none"');
+            if (el.closest("[inert]")) signals.push("inert");
+            if (el.getAttribute("tabindex") === "-1") signals.push('tabindex="-1"');
+
+            return { boundingBox, decorativeSignal: signals.length ? signals.join(", ") : null };
           }, selector)
-        : null;
+        : { boundingBox: null, decorativeSignal: null };
+      node.boundingBox = nodeData.boundingBox;
+      node.decorativeSignal = nodeData.decorativeSignal;
     }
   }
 
@@ -519,6 +524,19 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
   }
 
   const data = await response.json();
+
+  // If generation got cut off by the token limit, the tool call may be
+  // missing entirely or only partially formed, don't trust it either way.
+  // Most pages won't come close to this, but a page with an unusually large
+  // number of violations could, and a truncated response failing loudly here
+  // is much better than a subtly wrong or incomplete one reaching the user.
+  if (data.stop_reason === "max_tokens") {
+    throw new UserFacingError(
+      "This page has an unusually large number of violations, more than the AI could fully process in one pass. Try scanning a smaller page or a specific section.",
+      { cause: new Error("Claude response hit max_tokens before completing.") }
+    );
+  }
+
   const toolUse = data.content.find((b) => b.type === "tool_use");
   if (!toolUse) {
     throw new UserFacingError(
@@ -527,7 +545,47 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
     );
   }
 
-  const { clusters } = toolUse.input;
+  let { clusters } = toolUse.input;
+
+  // The system prompt asks Claude to put every node index in exactly one
+  // cluster, but nothing enforced that until now. If the model ever drops an
+  // index, that real, axe-confirmed violation would otherwise vanish from
+  // the results with no error and no visibility, silently wrong for a tool
+  // whose entire job is surfacing every real violation, then triaging it.
+  // Reconcile what was actually claimed against the full set: drop invented/
+  // out-of-range indices, keep only the first claim of any index the model
+  // assigned to more than one cluster, and sweep anything left uncovered
+  // into a fallback cluster instead of letting it disappear.
+  const claimedIndices = new Set();
+  for (const cluster of clusters) {
+    cluster.node_indices = (cluster.node_indices || []).filter((i) => {
+      if (!flatNodes[i]) return false;
+      if (claimedIndices.has(i)) return false;
+      claimedIndices.add(i);
+      return true;
+    });
+  }
+  // A cluster that lost every one of its nodes to deduping above (all of them
+  // turned out to be claimed elsewhere first) would otherwise render as an
+  // empty "0 elements" ticket, drop it rather than show that.
+  clusters = clusters.filter((c) => c.node_indices.length > 0);
+
+  const missingIndices = flatNodes.map((_, i) => i).filter((i) => !claimedIndices.has(i));
+  if (missingIndices.length > 0) {
+    clusters.push({
+      cluster_title: `Uncategorized violation${missingIndices.length === 1 ? "" : "s"} (${missingIndices.length})`,
+      root_cause_explanation:
+        "These were found by axe-core, but the clustering step didn't group them under a specific shared root cause. Listed individually here rather than dropped, so nothing found by the scan goes missing from the results.",
+      node_indices: missingIndices,
+      suggested_fix: "Review each affected element individually; no shared pattern was identified for these.",
+      ticket: {
+        title: `Review ${missingIndices.length} uncategorized accessibility violation${missingIndices.length === 1 ? "" : "s"}`,
+        description:
+          "These violations weren't grouped into a specific cluster by the triage step. Each is still a real axe-core finding and needs review.",
+        acceptance_criteria: ["Each affected element reviewed and either fixed or explicitly deferred with a reason."],
+      },
+    });
+  }
 
   const enrichedClusters = clusters.map((cluster) => {
     const nodes = cluster.node_indices.map((i) => flatNodes[i]).filter(Boolean);
