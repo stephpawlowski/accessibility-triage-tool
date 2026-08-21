@@ -525,7 +525,7 @@ function render(result) {
 
   meta.innerHTML = `
     <div class="scan-meta-line">
-      <div><strong>${result.url}</strong></div>
+      <div><strong>${escapeHtml(result.url)}</strong></div>
       <div>Scanned ${new Date(result.scannedAt).toLocaleString()}</div>
     </div>
     <div class="stat-grid">

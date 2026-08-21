@@ -82,7 +82,7 @@ const TOOL_SCHEMA = {
             caveat: {
               type: "string",
               description:
-                "Optional. Only include this if the raw html for one or more nodes in this cluster shows aria-hidden=\"true\" and/or tabindex=\"-1\". Note plainly that the site's own developers already excluded that element from assistive tech and keyboard navigation, so it may be decorative (e.g. part of an illustrative graphic or animation) rather than a real interactive control, even though it still fails a visual check like color-contrast. Omit this field entirely when no such signal is present. Never use this as a reason to drop or downweight the node, only to flag it for human review.",
+                "Optional. Only include this if one or more nodes in this cluster has a non-null decorativeSignal. Note plainly which signal(s) were found (e.g. aria-hidden=\"true\", role=\"presentation\"). The site's own developers already excluded that element from assistive tech and/or keyboard navigation, so it may be decorative (e.g. part of an illustrative graphic or animation) rather than a real interactive control, even though it still fails a visual check like color-contrast. Omit this field entirely when no node in the cluster has a decorativeSignal. Never use this as a reason to drop or downweight the node, only to flag it for human review.",
             },
             ticket: {
               type: "object",
@@ -119,7 +119,7 @@ Do not cluster purely by axe rule id. Two nodes can fail the same rule for genui
 
 Every node index must appear in exactly one cluster. Do not invent node indices that weren't provided. Be specific in fixes and tickets, reference actual values (colors, sizes) from the data rather than generic advice.
 
-Each node's raw html snippet is included. Check it for aria-hidden="true" and/or tabindex="-1". These are strong signals that the site's own developers already excluded that specific element from assistive technology and keyboard navigation on purpose, meaning it is likely decorative (part of an illustrative graphic, animation, or embedded mockup) rather than a real interactive control, even though it can still fail a purely visual check like color-contrast. When you see this signal, still cluster and report the node normally, but add a short caveat noting it, so a human can judge whether it is worth fixing. Never use this signal as a reason to drop, exclude, or downweight a node, only to flag it.`;
+Each node includes a decorativeSignal field, precomputed against the element's full (untruncated) HTML. It lists things like aria-hidden="true", tabindex="-1", role="presentation"/"none", or inert when present, or is null when none apply. These mean the site's own developers already excluded that element from assistive technology and/or keyboard navigation on purpose, so it is likely decorative (part of an illustrative graphic, animation, or embedded mockup) rather than a real interactive control, even though it can still fail a purely visual check like color-contrast. When decorativeSignal is non-null for some or all nodes in a cluster, still cluster and report the node normally, but add a short caveat naming the specific signal(s) found, so a human can judge whether it is worth fixing. Never use this as a reason to drop, exclude, or downweight a node, only to flag it.`;
 
 export default {
   async fetch(request, env) {
@@ -317,6 +317,23 @@ async function runScan(targetUrl, env) {
   }
 }
 
+// Signals that the site's own developers already excluded this element from
+// assistive tech and/or keyboard navigation, meaning it's likely decorative
+// (an illustrative graphic, animation, or mockup) rather than a real
+// interactive control, even though it can still fail a purely visual check
+// like color-contrast. Checked against the FULL node.html, not the truncated
+// version below, so a long class list or many preceding attributes can't
+// push the signal past a length cutoff and silently hide it from the model.
+function detectDecorativeSignal(html) {
+  if (!html) return null;
+  const signals = [];
+  if (/\baria-hidden\s*=\s*["']true["']/i.test(html)) signals.push('aria-hidden="true"');
+  if (/\btabindex\s*=\s*["']-1["']/i.test(html)) signals.push('tabindex="-1"');
+  if (/\brole\s*=\s*["'](?:presentation|none)["']/i.test(html)) signals.push('role="presentation"/"none"');
+  if (/(?:^|\s)inert(?=\s|=|>|$)/i.test(html)) signals.push("inert");
+  return signals.length ? signals.join(", ") : null;
+}
+
 async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
   const flatNodes = [];
   for (const violation of violations) {
@@ -328,6 +345,7 @@ async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
         help: violation.help,
         target: node.target,
         html: truncate(node.html, 300),
+        decorativeSignal: detectDecorativeSignal(node.html),
         failureSummary: node.failureSummary,
         boundingBox: node.boundingBox,
       });
@@ -504,7 +522,15 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
       return w > (SEVERITY_WEIGHT[worst] || 0) ? n.impact : worst;
     }, nodes[0]?.impact || "minor");
     const priority_score = (SEVERITY_WEIGHT[worstImpact] || 1) * reach;
-    return { ...cluster, reach, worst_impact: worstImpact, priority_score, nodes };
+    // Only boundingBox is ever used by the frontend (to draw the overlay
+    // boxes on the screenshot). The rest of each flatNode (html, target,
+    // failureSummary, help) is the scanned page's own raw markup/text, not
+    // something this project generated, don't ship it to the browser just
+    // because it's available server-side. Keeps the response minimal and
+    // removes a latent stored-XSS surface for any future feature that might
+    // render node data straight from the API response.
+    const publicNodes = nodes.map((n) => ({ boundingBox: n.boundingBox }));
+    return { ...cluster, reach, worst_impact: worstImpact, priority_score, nodes: publicNodes };
   });
 
   enrichedClusters.sort((a, b) => b.priority_score - a.priority_score);
