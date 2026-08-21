@@ -654,33 +654,39 @@ ${cluster.ticket.acceptance_criteria.map((c) => `- [ ] ${c}`).join("\n")}
       </details>
     `;
 
-    card.querySelector(".locate-btn").addEventListener("click", () => {
-      const boxes = wrap.querySelectorAll(`.overlay-box[data-cluster-index="${i}"]`);
-      if (boxes.length === 0) return;
-      boxes[0].scrollIntoView({ behavior: "smooth", block: "center" });
-      setTimeout(() => {
-        boxes.forEach((b) => {
-          b.classList.remove("pulse");
-          void b.offsetWidth;
-          b.classList.add("pulse");
-          setTimeout(() => b.classList.remove("pulse"), 1900);
-        });
-      }, 500);
-    });
-
-    card.querySelector(".copy-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      navigator.clipboard.writeText(ticketMd).then(() => {
-        const btn = e.target;
-        const original = btn.textContent;
-        btn.textContent = "Copied";
-        btn.classList.add("copied");
+    const locateBtn = card.querySelector(".locate-btn");
+    if (locateBtn) {
+      locateBtn.addEventListener("click", () => {
+        const boxes = wrap.querySelectorAll(`.overlay-box[data-cluster-index="${i}"]`);
+        if (boxes.length === 0) return;
+        boxes[0].scrollIntoView({ behavior: "smooth", block: "center" });
         setTimeout(() => {
-          btn.textContent = original;
-          btn.classList.remove("copied");
-        }, 1500);
+          boxes.forEach((b) => {
+            b.classList.remove("pulse");
+            void b.offsetWidth;
+            b.classList.add("pulse");
+            setTimeout(() => b.classList.remove("pulse"), 1900);
+          });
+        }, 500);
       });
-    });
+    }
+
+    const copyBtn = card.querySelector(".copy-btn");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(ticketMd).then(() => {
+          const btn = e.target;
+          const original = btn.textContent;
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = original;
+            btn.classList.remove("copied");
+          }, 1500);
+        });
+      });
+    }
 
     ticketsEl.appendChild(card);
   }
