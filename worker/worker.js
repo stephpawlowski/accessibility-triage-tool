@@ -36,6 +36,17 @@ const SEVERITY_WEIGHT = { critical: 4, serious: 3, moderate: 2, minor: 1 };
 const AXE_CORE_URL =
   "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js";
 const RATE_LIMIT_PER_HOUR = 5; // conservative: free tier is 10 browser-minutes/day total, shared across all visitors
+// Per-visitor limiting alone doesn't stop someone rotating IPs from racking
+// up real Claude API cost across many distinct "visitors." At Sonnet 5
+// pricing ($2/$10 per million input/output tokens), a typical scan costs
+// roughly $0.01-0.03, a worst-case large scan (many violations, near the
+// 8192 output token cap) roughly $0.10. 40/day caps worst-case spend around
+// $4/day (~$120/mo if hit on every single day, an already-pessimistic
+// scenario) while comfortably covering real traffic for a portfolio tool.
+// It also roughly matches the existing physical ceiling: Browser Rendering's
+// free-tier 10 browser-minutes/day already limits total scans to a similar
+// ballpark, so this mostly matters if that tier or setup ever changes.
+const GLOBAL_DAILY_SCAN_LIMIT = 40;
 const VIEWPORT = { width: 1280, height: 900 };
 const GOTO_TIMEOUT_MS = 35000;
 // Time to let a page settle after DOMContentLoaded before scanning, gives
@@ -150,6 +161,15 @@ export default {
       return withCors(jsonResponse({ error: rateLimitError }, 429));
     }
 
+    // Checked after the per-visitor limit (cheaper, catches the common case
+    // first), but still before the actual scan: this is the backstop against
+    // the per-visitor limit being bypassed by rotating IPs, so it needs to
+    // gate real API spend, not just log it after the fact.
+    const globalBudgetError = await checkGlobalDailyBudget(env);
+    if (globalBudgetError) {
+      return withCors(jsonResponse({ error: globalBudgetError }, 429));
+    }
+
     try {
       const result = await runScan(body.url, env);
       return withCors(jsonResponse(result, 200));
@@ -227,6 +247,25 @@ async function checkRateLimit(ip, env) {
   return null;
 }
 
+// Backstop against the per-visitor limit above being trivially bypassed by
+// rotating IPs, protects actual Claude API spend, not just Browser Rendering
+// minutes. Keyed by calendar date (UTC) so it resets naturally once a day.
+async function checkGlobalDailyBudget(env) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, UTC
+  const key = `a11y-triage:global-daily:${today}`;
+  const current = parseInt((await env.RATE_LIMIT_KV_2.get(key)) || "0", 10);
+  if (current >= GLOBAL_DAILY_SCAN_LIMIT) {
+    return "This tool has hit its total scan budget for today (shared across all visitors, protects real API costs). Try again tomorrow.";
+  }
+  // 25h TTL, not 24h: gives the key a little buffer past midnight UTC so a
+  // slow-clocked write can't accidentally outlive its intended day and leak
+  // into the next one's count.
+  await env.RATE_LIMIT_KV_2.put(key, String(current + 1), {
+    expirationTtl: 90000,
+  });
+  return null;
+}
+
 // --- Input validation (basic SSRF guardrails) -------------------------------
 // This endpoint fetches whatever URL a visitor types, server-side. Block the
 // obvious ways that could be pointed at internal/private infrastructure
@@ -288,6 +327,16 @@ async function runScan(targetUrl, env) {
     const page = await browser.newPage();
     page.on("error", () => {
       rendererCrashed = true;
+    });
+    // A scanned page can trigger a native alert()/confirm()/prompt(), or a
+    // beforeunload prompt on navigation, none of which we can see or click
+    // through. Left unhandled, a dialog blocks everything after it (axe.run,
+    // the screenshot) until the browser session's own timeout finally fires,
+    // burning a full Browser Rendering session for nothing and surfacing as
+    // a generic timeout instead of this specific, easily-explained cause.
+    // Auto-dismiss immediately so a scan can proceed past it.
+    page.on("dialog", (dialog) => {
+      dialog.dismiss().catch(() => {});
     });
     await page.setViewport(VIEWPORT);
     await navigateAndSettle(page, targetUrl);
@@ -395,6 +444,19 @@ async function navigateAndSettle(page, targetUrl) {
   if (response && !response.ok()) {
     throw new UserFacingError(
       `That page returned a ${response.status()} instead of loading normally. Double-check the URL.`
+    );
+  }
+
+  // A URL that resolves to a PDF, an image, a raw JSON API response, etc.
+  // still gets a 200 OK, page.goto "succeeds," there's just nothing
+  // WCAG-relevant to scan. Catch that here with a clear message instead of
+  // proceeding to axe-core against whatever the browser happens to render
+  // for a non-HTML response, which reliably makes a low-signal or empty
+  // result look like a real (and misleading) "clean" scan.
+  const contentType = response?.headers()["content-type"] || "";
+  if (contentType && !contentType.includes("text/html")) {
+    throw new UserFacingError(
+      `That URL doesn't return an HTML page (content-type: ${contentType.split(";")[0]}), so there's nothing to scan.`
     );
   }
 
