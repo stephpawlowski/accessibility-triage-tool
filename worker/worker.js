@@ -145,6 +145,16 @@ export default {
       return withCors(jsonResponse({ error: "Invalid JSON body." }, 400));
     }
 
+    // A literal JSON `null` (or any non-object) is valid JSON, so the parse
+    // above succeeds, but body.url below would throw on null specifically,
+    // before this request ever reaches withCors(). That means the browser
+    // would see a raw CORS failure instead of a clean JSON error. Guard it
+    // explicitly rather than relying on every field access downstream to
+    // happen to be null-safe.
+    if (!body || typeof body !== "object") {
+      return withCors(jsonResponse({ error: "Invalid request body." }, 400));
+    }
+
     const validationError = validateUrl(body.url);
     if (validationError) {
       return withCors(jsonResponse({ error: validationError }, 400));
@@ -271,6 +281,53 @@ async function checkGlobalDailyBudget(env) {
 // obvious ways that could be pointed at internal/private infrastructure
 // instead of a real public site. Not exhaustive, but blocks the easy cases.
 
+// Best-effort conversion of the two most common alternate IPv4 notations (a
+// single decimal integer, or a 0x-prefixed hex integer) into a normal
+// dotted-quad. Some networking stacks still resolve "2130706433" or
+// "0x7f000001" to 127.0.0.1 even though neither matches "127.0.0.1" as a
+// string, a known way to slip a blocked address past a naive string check.
+// Not exhaustive (e.g. per-octet octal like "0177.0.0.1" isn't covered),
+// same "blocks the easy cases" philosophy as the rest of this function.
+function normalizeIfAlternateIPv4(hostname) {
+  let num = null;
+  if (/^\d+$/.test(hostname)) {
+    num = Number(hostname);
+  } else if (/^0x[0-9a-f]+$/i.test(hostname)) {
+    num = Number(hostname);
+  }
+  if (num === null || !Number.isInteger(num) || num < 0 || num > 0xffffffff) {
+    return null;
+  }
+  return [(num >>> 24) & 0xff, (num >>> 16) & 0xff, (num >>> 8) & 0xff, num & 0xff].join(".");
+}
+
+function isBlockedIPv4(hostname) {
+  // 127.0.0.0/8 (the whole loopback range, not just 127.0.0.1), 10.0.0.0/8,
+  // 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 (link-local + cloud
+  // metadata), and 0.0.0.0/8.
+  return /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|0\.)/.test(hostname);
+}
+
+function isBlockedIPv6(hostname) {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (h === "::1" || h === "::" || h === "0") return true;
+  if (/^f[cd][0-9a-f]{0,2}(:|$)/.test(h)) return true; // unique local, fc00::/7
+  if (/^fe[89ab][0-9a-f]?(:|$)/.test(h)) return true; // link-local, fe80::/10
+  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1). The URL parser normalizes
+  // this to hex hextets (::ffff:7f00:1) rather than keeping the dotted-quad
+  // literal, so check both forms.
+  const mappedDotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedDotted && isBlockedIPv4(mappedDotted[1])) return true;
+  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const high = parseInt(mappedHex[1], 16);
+    const low = parseInt(mappedHex[2], 16);
+    const ipv4 = [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff].join(".");
+    if (isBlockedIPv4(ipv4)) return true;
+  }
+  return false;
+}
+
 function validateUrl(raw) {
   if (!raw || typeof raw !== "string") return "Missing url.";
   let parsed;
@@ -283,12 +340,18 @@ function validateUrl(raw) {
     return "Only http/https URLs are allowed.";
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(hostname)) {
-    return "That host isn't allowed.";
+  if (["localhost", "0.0.0.0", "0"].includes(hostname)) {
+    return "That host isn't allowed (private, local, or internal addresses can't be scanned).";
   }
-  // Private IP ranges (RFC1918) and the link-local/cloud-metadata range.
-  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.)/.test(hostname)) {
-    return "That host isn't allowed.";
+  if (isBlockedIPv4(hostname)) {
+    return "That host isn't allowed (private, local, or internal addresses can't be scanned).";
+  }
+  if (isBlockedIPv6(hostname)) {
+    return "That host isn't allowed (private, local, or internal addresses can't be scanned).";
+  }
+  const alternateIPv4 = normalizeIfAlternateIPv4(hostname);
+  if (alternateIPv4 && isBlockedIPv4(alternateIPv4)) {
+    return "That host isn't allowed (private, local, or internal addresses can't be scanned).";
   }
   return null;
 }
@@ -426,16 +489,51 @@ async function buildScanResult(targetUrl, violations, screenshotBase64, env) {
 }
 
 async function navigateAndSettle(page, targetUrl) {
+  // validateUrl() (in the request handler) only ever checks the URL a
+  // visitor typed. Once the browser starts navigating, ordinary HTTP
+  // redirects are followed transparently, with no re-check against the
+  // private-IP/localhost rules, so a URL that looks completely public could
+  // redirect straight into exactly what those rules exist to block. Catch
+  // that by intercepting only top-level navigation requests (the page's own
+  // address changing, via redirect) and re-validating each one. Every other
+  // request on the page (images, scripts, XHR, fonts, etc.) is waved through
+  // immediately and unchecked, interception adds real overhead once enabled,
+  // but only navigation requests actually do any work in this handler.
+  let blockedRedirectUrl = null;
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      const err = validateUrl(request.url());
+      if (err) {
+        blockedRedirectUrl = request.url();
+        request.abort("blockedbyclient").catch(() => {});
+        return;
+      }
+    }
+    request.continue().catch(() => {});
+  });
+
   // "load" (all initial resources finished) is more reliable than
   // "networkidle*" for arbitrary real-world sites: pages with any
   // persistent connection (analytics, chat widgets, live dashboards) never
   // go network-idle and would time out even after finishing their visible
   // load. The settle window afterward gives client-side redirects/hydration
   // a chance to happen before we start evaluating against the page.
-  const response = await page.goto(targetUrl, {
-    waitUntil: "load",
-    timeout: GOTO_TIMEOUT_MS,
-  });
+  let response;
+  try {
+    response = await page.goto(targetUrl, {
+      waitUntil: "load",
+      timeout: GOTO_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (blockedRedirectUrl) {
+      throw new UserFacingError(
+        `This page redirected to an address that isn't allowed to be scanned (${new URL(blockedRedirectUrl).hostname}). If the destination is a legitimate public site, try scanning that URL directly.`,
+        { cause: err }
+      );
+    }
+    throw err;
+  }
 
   // page.goto doesn't throw on a 4xx/5xx response, the navigation itself
   // still "succeeds," it just lands on an error page. Surface that clearly
@@ -466,52 +564,73 @@ async function navigateAndSettle(page, targetUrl) {
 async function scanPage(page, axeSource) {
   await page.evaluate(axeSource);
   const results = await page.evaluate(async () => {
+    // Scoped to formal WCAG success criteria specifically (2.0/2.1/2.2, A
+    // and AA). axe-core's full default rule set also includes some
+    // "best practice" checks that go beyond what WCAG actually requires,
+    // leaving those in would mean some flagged "violations" aren't
+    // technically WCAG violations at all, which doesn't match what this
+    // tool claims to check.
     // eslint-disable-next-line no-undef
-    return await axe.run(document, { resultTypes: ["violations"] });
+    return await axe.run(document, {
+      resultTypes: ["violations"],
+      runOnly: {
+        type: "tag",
+        values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"],
+      },
+    });
   });
   const violations = results.violations;
 
-  for (const violation of violations) {
-    for (const node of violation.nodes) {
-      const selector = flattenTarget(node.target);
-      const nodeData = selector
-        ? await page.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            if (!el) return { boundingBox: null, decorativeSignal: null };
-            const r = el.getBoundingClientRect();
-            const boundingBox =
-              r.width === 0 && r.height === 0
-                ? null
-                : {
-                    x: Math.round(r.x),
-                    y: Math.round(r.y),
-                    width: Math.round(r.width),
-                    height: Math.round(r.height),
-                  };
+  // Every violating node used to get its own page.evaluate() round-trip for
+  // bounding box + decorative-signal detection. On a page with genuinely
+  // many violations, that's dozens of sequential browser round-trips before
+  // Claude is even called, real added latency that pushes harder against
+  // the timeouts already being guarded against elsewhere. Batch every
+  // selector into a single evaluate() call instead, one round-trip total,
+  // looping inside the browser context rather than across the wire per node.
+  const allNodes = violations.flatMap((v) => v.nodes);
+  const selectors = allNodes.map((node) => flattenTarget(node.target));
 
-            // Real DOM check, not a regex on one node's own outerHTML: an
-            // element with none of these attributes on itself can still be
-            // inside a container the site marked aria-hidden/presentation/
-            // inert, which hides the whole subtree from assistive tech just
-            // as much as if the leaf element carried the attribute directly
-            // (a common real pattern: one wrapper around a whole decorative
-            // graphic, not the attribute repeated on every child). closest()
-            // starts from the element itself, so a self-attribute is still
-            // caught too. tabindex is deliberately NOT ancestor-checked, a
-            // parent's tabindex has no bearing on a child's focusability.
-            const signals = [];
-            if (el.closest('[aria-hidden="true"]')) signals.push('aria-hidden="true"');
-            if (el.closest('[role="presentation"], [role="none"]')) signals.push('role="presentation"/"none"');
-            if (el.closest("[inert]")) signals.push("inert");
-            if (el.getAttribute("tabindex") === "-1") signals.push('tabindex="-1"');
+  const nodeResults = await page.evaluate((sels) => {
+    return sels.map((sel) => {
+      if (!sel) return { boundingBox: null, decorativeSignal: null };
+      const el = document.querySelector(sel);
+      if (!el) return { boundingBox: null, decorativeSignal: null };
+      const r = el.getBoundingClientRect();
+      const boundingBox =
+        r.width === 0 && r.height === 0
+          ? null
+          : {
+              x: Math.round(r.x),
+              y: Math.round(r.y),
+              width: Math.round(r.width),
+              height: Math.round(r.height),
+            };
 
-            return { boundingBox, decorativeSignal: signals.length ? signals.join(", ") : null };
-          }, selector)
-        : { boundingBox: null, decorativeSignal: null };
-      node.boundingBox = nodeData.boundingBox;
-      node.decorativeSignal = nodeData.decorativeSignal;
-    }
-  }
+      // Real DOM check, not a regex on one node's own outerHTML: an element
+      // with none of these attributes on itself can still be inside a
+      // container the site marked aria-hidden/presentation/inert, which
+      // hides the whole subtree from assistive tech just as much as if the
+      // leaf element carried the attribute directly (a common real pattern:
+      // one wrapper around a whole decorative graphic, not the attribute
+      // repeated on every child). closest() starts from the element itself,
+      // so a self-attribute is still caught too. tabindex is deliberately
+      // NOT ancestor-checked, a parent's tabindex has no bearing on a
+      // child's focusability.
+      const signals = [];
+      if (el.closest('[aria-hidden="true"]')) signals.push('aria-hidden="true"');
+      if (el.closest('[role="presentation"], [role="none"]')) signals.push('role="presentation"/"none"');
+      if (el.closest("[inert]")) signals.push("inert");
+      if (el.getAttribute("tabindex") === "-1") signals.push('tabindex="-1"');
+
+      return { boundingBox, decorativeSignal: signals.length ? signals.join(", ") : null };
+    });
+  }, selectors);
+
+  allNodes.forEach((node, i) => {
+    node.boundingBox = nodeResults[i].boundingBox;
+    node.decorativeSignal = nodeResults[i].decorativeSignal;
+  });
 
   const screenshotBase64 = await page.screenshot({
     fullPage: true,
@@ -620,7 +739,10 @@ async function clusterWithClaude(targetUrl, nodesForModel, flatNodes, env) {
   // into a fallback cluster instead of letting it disappear.
   const claimedIndices = new Set();
   for (const cluster of clusters) {
-    cluster.node_indices = (cluster.node_indices || []).filter((i) => {
+    // Defensive: the tool schema types node_indices as an array, but that's
+    // not a runtime guarantee. A stray non-array truthy value here would
+    // otherwise throw on .filter below.
+    cluster.node_indices = (Array.isArray(cluster.node_indices) ? cluster.node_indices : []).filter((i) => {
       if (!flatNodes[i]) return false;
       if (claimedIndices.has(i)) return false;
       claimedIndices.add(i);
